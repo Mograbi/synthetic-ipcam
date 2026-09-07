@@ -138,11 +138,11 @@ services:
       -c:a aac -ar 16000 -ac 1
       -rtsp_transport tcp -f rtsp rtsp://mediamtx:8554/cam2-main
 
-  # AV1, single stream. Forward-looking — AV1 IP cameras barely exist yet —
-  # but it exercises the next codec cliff the way cam2's CRA keyframes
-  # exercise HEVC. ffmpeg gates the AV1 RTP payload format (an AOM draft
-  # spec) behind -strict experimental, on BOTH the publish and consume side.
-  cam3-av1:
+  # A third camera, single stream — the one to consume over rtspst:// (TLS with
+  # TCP interleaved forced). Nothing special server-side: rtspst is a CLIENT
+  # scheme, so this is an ordinary camera whose point is to be watched over the
+  # TLS port with UDP ruled out.
+  cam3:
     image: linuxserver/ffmpeg:latest
     restart: unless-stopped
     depends_on: [mediamtx]
@@ -153,10 +153,9 @@ services:
       [bg][fg]overlay=x=200:y=112:enable='lt(mod(t,60),20)'[v1];
       [v1][tick]overlay=x=W-w-16:y=H-h-16"
       -f lavfi -i sine=frequency=660:sample_rate=16000
-      -c:v libsvtav1 -preset 10 -g 30
-      -pix_fmt yuv420p -b:v 1M
+      -c:v libx264 -profile:v high -preset veryfast -tune zerolatency
+      -g 30 -bf 0 -pix_fmt yuv420p -b:v 1500k
       -c:a aac -ar 16000 -ac 1
-      -strict experimental
       -rtsp_transport tcp -f rtsp rtsp://mediamtx:8554/cam3-main
 
 volumes:

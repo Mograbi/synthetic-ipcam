@@ -2,9 +2,8 @@
 
 Camera-free test cameras: an RTSP server ([mediamtx](https://github.com/bluenviron/mediamtx))
 plus ffmpeg publishers shaped like real consumer IP cameras — a **dual-stream
-H.264 camera**, a **single-stream H.265 camera**, and a **forward-looking AV1
-camera**, all with AAC-LC 16 kHz mono audio, served over both **RTSP and
-RTSPS (TLS)**. Point any NVR, recorder, or RTSP client at them and test
+H.264 camera** and two **single-stream cameras** (one H.265), all with AAC-LC
+16 kHz mono audio, served over both **RTSP and RTSPS (TLS)**. Point any NVR, recorder, or RTSP client at them and test
 ingest, recording, motion detection, events, playback, and live view without
 touching hardware.
 
@@ -19,7 +18,7 @@ docker compose up -d
 | Camera 1, main | `rtsp://<host>:8554/cam1-main` | H.264 High + AAC | 1280×720 @ 15 |
 | Camera 1, sub | `rtsp://<host>:8554/cam1-sub` | H.264 High + AAC | 640×360 @ 15 |
 | Camera 2 (single stream) | `rtsp://<host>:8554/cam2-main` | H.265 Main + AAC | 1280×720 @ 15 |
-| Camera 3 (single stream) | `rtsp://<host>:8554/cam3-main` | AV1 Main + AAC | 1280×720 @ 15 |
+| Camera 3 (single stream) | `rtsp://<host>:8554/cam3-main` | H.264 High + AAC | 1280×720 @ 15 |
 
 Every stream is also served over TLS, on two ports that differ in a way worth
 understanding:
@@ -65,22 +64,27 @@ So: test against **8322** for "does my NVR support RTSPS cameras", and against
 and this one is self-signed — the same accommodation your NVR needs to make
 for real RTSPS cameras.)
 
-## AV1 (camera 3)
+## Forcing the transport: `rtspt://`, `rtspst://`
 
-AV1 IP cameras barely exist yet — this stream is for finding the next codec
-cliff before your users do, the way camera 2's CRA keyframes find HEVC bugs.
-Encoded with SVT-AV1 (preset 10, 2 s keyframe interval). One sharp edge worth
-knowing: the AV1 RTP payload format is still an AOM draft, and **ffmpeg gates
-it behind `-strict experimental` on both the publish and the consume side** —
-so to inspect it:
+Beyond `rtsp`/`rtsps`, RTSP clients commonly accept a family of schemes that
+*pin the media transport* — the spelling is systematic: an `s` after `rtsp`
+means TLS, and a trailing letter selects the transport (`t` interleaved TCP,
+`u` UDP, `h` tunnelled over HTTP):
+
+| Scheme | Means |
+|---|---|
+| `rtspt://<host>:8554/cam3-main` | plaintext, **TCP only** (no UDP fallback) |
+| `rtspst://<host>:8322/cam3-main` | **TLS + TCP only** — the strict form for a camera behind a firewall |
+| `rtspsu://<host>:8322/cam3-main` | TLS + UDP media |
+
+Camera 3 exists to be consumed this way. Nothing changes server-side — these
+are client schemes — but they are worth testing explicitly, because a consumer
+that only pattern-matches `rtsps://` will reject `rtspst://` outright or, worse,
+accept it and then quietly drop the TLS settings.
 
 ```sh
-ffprobe -rtsp_transport tcp -strict experimental -i rtsp://localhost:8554/cam3-main
+ffprobe -rtsp_transport tcp -tls_verify 0 -i rtsps://localhost:8322/cam3-main
 ```
-
-A consumer that refuses the stream outright (unsupported encoding) is giving
-a *correct* answer — the test is whether it says so honestly instead of
-failing silently.
 
 ## Why the picture looks the way it does
 
