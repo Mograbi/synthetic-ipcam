@@ -126,8 +126,7 @@ against this rig:
 
 ## Extracted from
 
-Built as the test rig for ain (an NVR for ARM64), where an H.264/H.265 copy
-lives in-tree. This repo is the standalone, NVR-agnostic asset.
+Built as the test rig for testing.
 
 ## License
 
