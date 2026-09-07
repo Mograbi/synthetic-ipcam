@@ -1,0 +1,135 @@
+# Synthetic IP cameras: an RTSP server plus ffmpeg publishers shaped like the
+# real thing — a dual-stream H.264 camera and a single-stream H.265 camera,
+# both with AAC-LC 16 kHz mono audio (the format consumer IP cameras actually
+# deliver). Point any NVR, recorder, or RTSP client at them; no hardware needed.
+#
+#   docker compose up -d
+#
+#   rtsp://<host>:8554/cam1-main   H.264 High 1280x720@15 + AAC   (main stream)
+#   rtsp://<host>:8554/cam1-sub    H.264 High  640x360@15 + AAC   (substream)
+#   rtsp://<host>:8554/cam2-main   H.265 Main 1280x720@15 + AAC   (single stream)
+#
+# The picture is engineered to be legible at a glance, in every phase:
+#   - static SMPTE bars as the ground — a flat dark frame is indistinguishable
+#     from a frozen decoder, and that ambiguity has cost real debugging rounds;
+#   - a small always-moving inset, bottom-right: continuous proof of life —
+#     if that box is animating, the whole pipeline is working. Its area is
+#     deliberately tiny (~0.4% of luma) so it stays under typical motion
+#     triggers;
+#   - a large moving pattern for 20 s of every 60: drives motion detection in
+#     bursts, so motion EVENTS actually open and close. A perpetually-moving
+#     test source never closes a motion run — recorders that emit events on
+#     the falling edge will emit none, which reads as a bug and isn't. The
+#     inset is sized (~47% of the frame) to clear a 3%-of-luma trigger with
+#     margin at both resolutions.
+#
+# Encoding choices that mirror real cameras (and keep strict recorders happy):
+#   - no B-frames (x264: -bf 0, x265: bframes=0) — DTS == PTS, like IP cameras;
+#   - 2 s closed GOP (keyint 30 @ 15 fps) so keyframe-driven chunk rotation
+#     lands promptly;
+#   - x265 repeat-headers=1: VPS/SPS/PPS on every keyframe, as cameras do.
+#     Note the H.265 keyframes come out as CRA NALs — worth keeping, since a
+#     WebRTC HEVC payloader that only handles IDR types breaks on exactly this
+#     (found one in the wild that way).
+
+name: synthetic-ipcam
+
+services:
+  # One-shot: self-signed cert for RTSPS, generated once into the shared
+  # volume and reused forever after (delete the volume to rotate it).
+  certs:
+    image: alpine/openssl:latest
+    entrypoint: /bin/sh
+    command: >
+      -c "[ -f /certs/server.crt ] || openssl req -x509 -newkey rsa:2048 -nodes
+      -keyout /certs/server.key -out /certs/server.crt -days 3650
+      -subj '/CN=synthetic-ipcam'"
+    volumes:
+      - certs:/certs
+
+  mediamtx:
+    image: bluenviron/mediamtx:1
+    restart: unless-stopped
+    depends_on:
+      certs:
+        condition: service_completed_successfully
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+      - certs:/certs:ro
+    ports:
+      - "${RTSP_PORT:-8554}:8554"
+      # RTSPS (TLS). Same streams, encrypted transport: rtsps://<host>:8322/...
+      - "${RTSPS_PORT:-8322}:8322"
+
+  cam1-main:
+    image: linuxserver/ffmpeg:latest
+    restart: unless-stopped
+    depends_on: [mediamtx]
+    command: >
+      -re -f lavfi -i "smptehdbars=size=1280x720:rate=15[bg];
+      testsrc2=size=880x496:rate=15[fg];
+      testsrc2=size=64x64:rate=15[tick];
+      [bg][fg]overlay=x=200:y=112:enable='lt(mod(t,60),20)'[v1];
+      [v1][tick]overlay=x=W-w-16:y=H-h-16"
+      -f lavfi -i sine=frequency=440:sample_rate=16000
+      -c:v libx264 -profile:v high -preset veryfast -tune zerolatency
+      -g 30 -bf 0 -pix_fmt yuv420p -b:v 2M
+      -c:a aac -ar 16000 -ac 1
+      -rtsp_transport tcp -f rtsp rtsp://mediamtx:8554/cam1-main
+
+  cam1-sub:
+    image: linuxserver/ffmpeg:latest
+    restart: unless-stopped
+    depends_on: [mediamtx]
+    command: >
+      -re -f lavfi -i "smptehdbars=size=640x360:rate=15[bg];
+      testsrc2=size=320x180:rate=15[fg];
+      testsrc2=size=48x48:rate=15[tick];
+      [bg][fg]overlay=x=160:y=90:enable='lt(mod(t,60),20)'[v1];
+      [v1][tick]overlay=x=W-w-12:y=H-h-12"
+      -f lavfi -i sine=frequency=330:sample_rate=16000
+      -c:v libx264 -profile:v high -preset veryfast -tune zerolatency
+      -g 30 -bf 0 -pix_fmt yuv420p -b:v 500k
+      -c:a aac -ar 16000 -ac 1
+      -rtsp_transport tcp -f rtsp rtsp://mediamtx:8554/cam1-sub
+
+  cam2-h265:
+    image: linuxserver/ffmpeg:latest
+    restart: unless-stopped
+    depends_on: [mediamtx]
+    command: >
+      -re -f lavfi -i "smptehdbars=size=1280x720:rate=15[bg];
+      testsrc2=size=880x496:rate=15[fg];
+      testsrc2=size=64x64:rate=15[tick];
+      [bg][fg]overlay=x=200:y=112:enable='lt(mod(t,60),20)'[v1];
+      [v1][tick]overlay=x=W-w-16:y=H-h-16"
+      -f lavfi -i sine=frequency=550:sample_rate=16000
+      -c:v libx265 -preset veryfast -tune zerolatency
+      -x265-params keyint=30:min-keyint=30:bframes=0:repeat-headers=1
+      -pix_fmt yuv420p -b:v 1500k
+      -c:a aac -ar 16000 -ac 1
+      -rtsp_transport tcp -f rtsp rtsp://mediamtx:8554/cam2-main
+
+  # AV1, single stream. Forward-looking — AV1 IP cameras barely exist yet —
+  # but it exercises the next codec cliff the way cam2's CRA keyframes
+  # exercise HEVC. ffmpeg gates the AV1 RTP payload format (an AOM draft
+  # spec) behind -strict experimental, on BOTH the publish and consume side.
+  cam3-av1:
+    image: linuxserver/ffmpeg:latest
+    restart: unless-stopped
+    depends_on: [mediamtx]
+    command: >
+      -re -f lavfi -i "smptehdbars=size=1280x720:rate=15[bg];
+      testsrc2=size=880x496:rate=15[fg];
+      testsrc2=size=64x64:rate=15[tick];
+      [bg][fg]overlay=x=200:y=112:enable='lt(mod(t,60),20)'[v1];
+      [v1][tick]overlay=x=W-w-16:y=H-h-16"
+      -f lavfi -i sine=frequency=660:sample_rate=16000
+      -c:v libsvtav1 -preset 10 -g 30
+      -pix_fmt yuv420p -b:v 1M
+      -c:a aac -ar 16000 -ac 1
+      -strict experimental
+      -rtsp_transport tcp -f rtsp rtsp://mediamtx:8554/cam3-main
+
+volumes:
+  certs:

@@ -1,0 +1,21 @@
+# Minimal mediamtx override — unspecified keys keep mediamtx's defaults.
+#
+# TLS is OPTIONAL, not strict: the same server speaks plain RTSP on :8554 and
+# RTSPS on :8322, so consumers can be tested against both transports without
+# running two rigs. The publishers stay on plain RTSP inside the compose
+# network; encryption is a consumer-side concern here.
+#
+# The cert is self-signed, generated on first start by the `certs` service
+# (CN=synthetic-ipcam, 10 years). Clients must either skip verification or
+# trust it — which mirrors real cameras, whose RTSPS certs are practically
+# always self-signed.
+rtspEncryption: optional
+rtspServerKey: /certs/server.key
+rtspServerCert: /certs/server.crt
+
+# Accept publishing/reading on any path — this is the stock config's catch-all,
+# restated because a custom config REPLACES the shipped file rather than
+# merging with it: omit this and every publisher is refused with
+# "path not configured".
+paths:
+  all_others:
