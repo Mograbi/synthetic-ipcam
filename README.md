@@ -41,6 +41,17 @@ ships a self-signed cert.
 ffprobe -rtsp_transport tcp -tls_verify 0 -i rtsps://localhost:8322/cam1-sub
 ```
 
+**Know what you are testing:** over RTSPS mediamtx advertises
+`m=video 0 RTP/SAVP` — the media itself is **SRTP-encrypted**, keyed out of
+band via MIKEY (RFC 4567) — where plain RTSP advertises `RTP/AVP`. Most real
+RTSPS cameras do the opposite: plain RTP carried inside the TLS control
+connection. So this rig is a *stricter* RTSPS test than typical hardware, and
+a consumer that handles real cameras may still fail here. ffmpeg copes;
+GStreamer's `rtspsrc` (1.22) negotiates SRTP, builds a decryptor, and then
+receives nothing — no media, no error, just silence. If your stack goes quiet
+against cam1 over 8322 but works over 8554, check the SDP profile before
+suspecting your TLS setup.
+
 (`-tls_verify 0` because modern ffmpeg verifies TLS certificates by default
 and this one is self-signed — the same accommodation your NVR needs to make
 for real RTSPS cameras.)
