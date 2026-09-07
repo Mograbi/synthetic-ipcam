@@ -21,36 +21,45 @@ docker compose up -d
 | Camera 2 (single stream) | `rtsp://<host>:8554/cam2-main` | H.265 Main + AAC | 1280×720 @ 15 |
 | Camera 3 (single stream) | `rtsp://<host>:8554/cam3-main` | AV1 Main + AAC | 1280×720 @ 15 |
 
-Every stream is also served over TLS on port 8322 — same paths, `rtsps://`
-scheme: e.g. `rtsps://<host>:8322/cam1-main`.
+Every stream is also served over TLS, on two ports that differ in a way worth
+understanding:
 
-Override the published ports with `RTSP_PORT=8555 RTSPS_PORT=8323 docker
-compose up -d`.
+| Port | URL | What it is |
+|---|---|---|
+| 8322 | `rtsps://<host>:8322/cam1-main` | **Camera-shaped**: TLS control connection, plain `RTP/AVP` interleaved inside it |
+| 8323 | `rtsps://<host>:8323/cam1-main` | mediamtx native: `RTP/SAVP` — the media itself is SRTP-encrypted |
 
-## RTSPS (TLS)
+Override the published ports with `RTSP_PORT=8555 RTSPS_PORT=8322
+RTSPS_SRTP_PORT=8323 docker compose up -d`.
 
-Encryption is *optional*, not strict: the same server answers plain RTSP on
-8554 and RTSPS on 8322, so a consumer can be tested against both transports
-from one rig. The certificate is self-signed (`CN=synthetic-ipcam`), generated
-on first start by the one-shot `certs` service into a named volume — delete
-the `certs` volume to rotate it. Clients must skip verification or trust the
-cert, which mirrors real cameras: RTSPS-capable hardware practically always
-ships a self-signed cert.
+## RTSPS (TLS) — two flavours, on purpose
+
+The certificate is self-signed (`CN=synthetic-ipcam`), generated on first start
+by the one-shot `certs` service into a named volume — delete the `certs` volume
+to rotate it. Clients must skip verification or trust it, which mirrors real
+cameras: RTSPS-capable hardware practically always ships a self-signed cert.
 
 ```sh
 ffprobe -rtsp_transport tcp -tls_verify 0 -i rtsps://localhost:8322/cam1-sub
 ```
 
-**Know what you are testing:** over RTSPS mediamtx advertises
-`m=video 0 RTP/SAVP` — the media itself is **SRTP-encrypted**, keyed out of
-band via MIKEY (RFC 4567) — where plain RTSP advertises `RTP/AVP`. Most real
-RTSPS cameras do the opposite: plain RTP carried inside the TLS control
-connection. So this rig is a *stricter* RTSPS test than typical hardware, and
-a consumer that handles real cameras may still fail here. ffmpeg copes;
-GStreamer's `rtspsrc` (1.22) negotiates SRTP, builds a decryptor, and then
-receives nothing — no media, no error, just silence. If your stack goes quiet
-against cam1 over 8322 but works over 8554, check the SDP profile before
-suspecting your TLS setup.
+**Port 8322 is what an IP camera means by `rtsps://`**: the *control connection*
+is TLS, and RTP rides interleaved inside it as ordinary `RTP/AVP`. It is served
+by TLS-terminating in front of the plain RTSP listener, which is exactly the
+shape cameras produce — the SDP says `m=video 0 RTP/AVP`, and any client that
+speaks RTSP-over-TLS just works.
+
+**Port 8323 is mediamtx's own RTSPS**, which advertises `m=video 0 RTP/SAVP`:
+the media is **SRTP-encrypted**, keyed out of band via MIKEY (RFC 4567). Few
+cameras do this, and support is uneven — ffmpeg copes; GStreamer's `rtspsrc`
+(1.22) negotiates SRTP, builds a decryptor, and then receives nothing at all:
+no media, no error, just silence, which surfaces as a negotiation timeout
+blaming the camera for advertising no video. That makes 8323 a genuinely
+useful hostile case: a consumer should either decrypt it or *say* it cannot,
+rather than going quiet.
+
+So: test against **8322** for "does my NVR support RTSPS cameras", and against
+**8323** for "does my NVR fail honestly when it meets SRTP".
 
 (`-tls_verify 0` because modern ffmpeg verifies TLS certificates by default
 and this one is self-signed — the same accommodation your NVR needs to make

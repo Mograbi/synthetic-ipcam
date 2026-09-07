@@ -58,8 +58,36 @@ services:
       - certs:/certs:ro
     ports:
       - "${RTSP_PORT:-8554}:8554"
-      # RTSPS (TLS). Same streams, encrypted transport: rtsps://<host>:8322/...
+      # mediamtx's NATIVE RTSPS, which is the SRTP variant: its SDP advertises
+      # RTP/SAVP and the media is encrypted, keyed via MIKEY. Real cameras
+      # almost never do this — see rtsps below for the camera-shaped port —
+      # but it is a genuinely stricter test, so it stays available.
+      - "${RTSPS_SRTP_PORT:-8323}:8322"
+
+  # Camera-shaped RTSPS: TLS termination in front of the PLAIN RTSP listener.
+  #
+  # This is what IP cameras actually mean by rtsps:// — the control connection
+  # is TLS, and RTP rides interleaved inside it as ordinary RTP/AVP. mediamtx's
+  # own RTSPS port instead negotiates SRTP (RTP/SAVP), which several clients
+  # (notably GStreamer's rtspsrc) cannot consume: they negotiate it, build a
+  # decryptor, and then receive nothing at all — no media, no error. Proxying
+  # keeps the SDP saying RTP/AVP, so the bytes on the wire look like hardware.
+  rtsps:
+    image: alpine/socat:latest
+    restart: unless-stopped
+    depends_on:
+      certs:
+        condition: service_completed_successfully
+    volumes:
+      - certs:/certs:ro
+    ports:
       - "${RTSPS_PORT:-8322}:8322"
+    # fork: one child per client, so several viewers can connect at once.
+    # verify=0: clients authenticate nothing here, exactly as with the
+    # self-signed certs cameras ship.
+    command: >
+      -d OPENSSL-LISTEN:8322,cert=/certs/server.crt,key=/certs/server.key,verify=0,reuseaddr,fork
+      TCP:mediamtx:8554
 
   cam1-main:
     image: linuxserver/ffmpeg:latest
